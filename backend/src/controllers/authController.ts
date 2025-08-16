@@ -19,10 +19,10 @@ export const showAllUsers = async (req: Request, res: Response): Promise<void> =
 
 // ฟังก์ชันสำหรับการลงทะเบียน
 export const register = async (req: Request, res: Response): Promise<void> => {
-    const { email, password,  firstName, lastName, } = req.body;
+    const { email, password, firstName, lastName, } = req.body;
 
     try {
-        const existingUser = await User.findOne({ $or: [{ email } ]});
+        const existingUser = await User.findOne({ $or: [{ email }] });
         if (existingUser) {
             if (existingUser.email === email) {
                 res.status(400).json({ message: 'อีเมลนี้ มีผู้ใช้อยู่ในระบบแล้ว' });
@@ -89,53 +89,6 @@ export const login = async (req: Request, res: Response): Promise<void> => {
         res.status(500).json({ message: 'Login failed', error });
     }
 };
-
-
-
-// ฟังก์ชันสำหรับการแก้ไข role ของผู้ใช้
-export const updateUserRole = async (req: Request, res: Response): Promise<void> => {
-    const { userId, newRole } = req.body;
-    const { role } = req.body; // ค่าของ role จากข้อมูลผู้ใช้ที่เข้าสู่ระบบ
-
-    try {
-        // ตรวจสอบว่า role ใหม่เป็นค่าที่ถูกต้องหรือไม่
-        const validRoles = ['user', 'viewer', 'manager', 'admin'];
-        if (!validRoles.includes(newRole)) {
-            res.status(400).json({ message: 'Invalid role. Must be one of: user, viewer, manager, admin' });
-            return;
-        }
-
-        // ตรวจสอบสิทธิ์การเปลี่ยน role
-        // เฉพาะ admin และ manager เท่านั้นที่สามารถเปลี่ยน role ได้
-        if (role !== 'admin' && role !== 'manager') {
-            res.status(403).json({ message: 'Permission denied. Only admin or manager can change roles.' });
-            return;
-        }
-
-        // manager สามารถเปลี่ยน role ได้เฉพาะ user และ viewer เท่านั้น
-        if (role === 'manager' && (newRole === 'admin' || newRole === 'manager')) {
-            res.status(403).json({ message: 'Permission denied. Manager cannot assign admin or manager roles.' });
-            return;
-        }
-
-        // ค้นหาผู้ใช้ที่ต้องการเปลี่ยน role
-        const user = await User.findById(userId);
-
-        if (!user) {
-            res.status(404).json({ message: 'User not found' });
-            return;
-        }
-
-        // อัปเดต role ของผู้ใช้
-        user.role = newRole;
-        await user.save();
-
-        res.status(200).json({ message: 'User role updated successfully' });
-    } catch (error) {
-        res.status(500).json({ message: 'Failed to update user role', error });
-    }
-};
-
 
 export const renewToken = async (req: Request, res: Response): Promise<void> => {
     try {
@@ -226,23 +179,95 @@ export const createUser = async (req: Request, res: Response): Promise<void> => 
 
         await newUser.save();
 
-        res.status(201).json({ message: 'User created successfully', user: {
-            id: newUser._id,
-            email: newUser.email,
-            firstName: newUser.firstName,
-            lastName: newUser.lastName,
-            role: newUser.role,
-            profile_img: newUser.profile_img
-        }});
+        res.status(201).json({
+            message: 'User created successfully', user: {
+                id: newUser._id,
+                email: newUser.email,
+                firstName: newUser.firstName,
+                lastName: newUser.lastName,
+                role: newUser.role,
+                profile_img: newUser.profile_img
+            }
+        });
     } catch (error) {
         res.status(500).json({ message: 'Failed to create user', error });
     }
 };
 
+export const updateUser = async (req: Request, res: Response): Promise<void> => {
+    const { userId, firstName, lastName, email, newRole, role: currentUserRole } = req.body;
+
+    try {
+        // ตรวจสอบสิทธิ์การแก้ไขผู้ใช้
+        if (currentUserRole !== 'admin' && currentUserRole !== 'manager') {
+            res.status(403).json({ message: 'Permission denied. Only admin or manager can update users.' });
+            return;
+        }
+
+        // ค้นหาผู้ใช้ที่ต้องการแก้ไข
+        const user = await User.findById(userId);
+        if (!user) {
+            res.status(404).json({ message: 'User not found' });
+            return;
+        }
+
+        // manager ไม่สามารถแก้ไข admin หรือ manager ได้
+        if (currentUserRole === 'manager' && (user.role === 'admin' || user.role === 'manager')) {
+            res.status(403).json({ message: 'Permission denied. Manager cannot update admin or manager accounts.' });
+            return;
+        }
+
+        // ตรวจสอบอีเมลซ้ำ
+        if (email && email !== user.email) {
+            const existingUser = await User.findOne({ email });
+            if (existingUser) {
+                res.status(400).json({ message: 'อีเมลนี้ มีผู้ใช้อยู่ในระบบแล้ว' });
+                return;
+            }
+        }
+
+        // อัปเดต role ถ้ามี
+        if (newRole) {
+            const validRoles = ['user', 'viewer', 'manager', 'admin'];
+            if (!validRoles.includes(newRole)) {
+                res.status(400).json({ message: 'Invalid role. Must be one of: user, viewer, manager, admin' });
+                return;
+            }
+
+            // ตรวจสอบสิทธิ์ในการแก้ไข role
+            if (currentUserRole === 'manager' && (newRole === 'admin' || newRole === 'manager')) {
+                res.status(403).json({ message: 'Permission denied. Manager cannot assign admin or manager roles.' });
+                return;
+            }
+        }
+
+        // อัปเดตข้อมูลผู้ใช้
+        user.firstName = firstName || user.firstName;
+        user.lastName = lastName || user.lastName;
+        user.email = email || user.email;
+        if (newRole) user.role = newRole;
+
+        await user.save();
+
+        res.status(200).json({
+            message: 'User updated successfully',
+            user: {
+                id: user._id,
+                email: user.email,
+                firstName: user.firstName,
+                lastName: user.lastName,
+                role: user.role,
+                profile_img: user.profile_img
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Failed to update user', error });
+    }
+};
+
 // ฟังก์ชันสำหรับการลบผู้ใช้
 export const deleteUser = async (req: Request, res: Response): Promise<void> => {
-    const { userId } = req.params;
-    const { role: currentUserRole } = req.body; // role ของผู้ใช้ที่เข้าสู่ระบบ
+    const { userId, role: currentUserRole, currentUserId } = req.body; // อ่านจาก body แทน params
 
     try {
         // ตรวจสอบสิทธิ์การลบผู้ใช้
@@ -265,7 +290,6 @@ export const deleteUser = async (req: Request, res: Response): Promise<void> => 
         }
 
         // ป้องกันการลบตัวเอง
-        const currentUserId = req.body.currentUserId; // ต้องส่ง currentUserId มาด้วย
         if (userId === currentUserId) {
             res.status(400).json({ message: 'Cannot delete your own account' });
             return;
@@ -276,62 +300,5 @@ export const deleteUser = async (req: Request, res: Response): Promise<void> => 
         res.status(200).json({ message: 'User deleted successfully' });
     } catch (error) {
         res.status(500).json({ message: 'Failed to delete user', error });
-    }
-};
-
-// ฟังก์ชันสำหรับการอัปเดตข้อมูลผู้ใช้
-export const updateUser = async (req: Request, res: Response): Promise<void> => {
-    const { userId } = req.params;
-    const { firstName, lastName, email, role: currentUserRole } = req.body;
-
-    try {
-        // ตรวจสอบสิทธิ์การแก้ไขผู้ใช้
-        if (currentUserRole !== 'admin' && currentUserRole !== 'manager') {
-            res.status(403).json({ message: 'Permission denied. Only admin or manager can update users.' });
-            return;
-        }
-
-        // ค้นหาผู้ใช้ที่ต้องการแก้ไข
-        const user = await User.findById(userId);
-        if (!user) {
-            res.status(404).json({ message: 'User not found' });
-            return;
-        }
-
-        // manager ไม่สามารถแก้ไข admin หรือ manager ได้
-        if (currentUserRole === 'manager' && (user.role === 'admin' || user.role === 'manager')) {
-            res.status(403).json({ message: 'Permission denied. Manager cannot update admin or manager accounts.' });
-            return;
-        }
-
-        // ตรวจสอบว่าอีเมลใหม่ซ้ำกับผู้ใช้อื่นหรือไม่
-        if (email && email !== user.email) {
-            const existingUser = await User.findOne({ email });
-            if (existingUser) {
-                res.status(400).json({ message: 'อีเมลนี้ มีผู้ใช้อยู่ในระบบแล้ว' });
-                return;
-            }
-        }
-
-        // อัปเดตข้อมูล
-        user.firstName = firstName || user.firstName;
-        user.lastName = lastName || user.lastName;
-        user.email = email || user.email;
-
-        await user.save();
-
-        res.status(200).json({ 
-            message: 'User updated successfully', 
-            user: {
-                id: user._id,
-                email: user.email,
-                firstName: user.firstName,
-                lastName: user.lastName,
-                role: user.role,
-                profile_img: user.profile_img
-            }
-        });
-    } catch (error) {
-        res.status(500).json({ message: 'Failed to update user', error });
     }
 };

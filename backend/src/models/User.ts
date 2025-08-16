@@ -38,7 +38,7 @@ const UserSchema = new Schema<IUser>(
         },
         role: {
             type: String,
-            enum: ['user', 'admin'], // กำหนดค่าให้เลือกได้ระหว่าง 'user' และ 'admin'
+            enum: ['user', 'admin','manager','viewer'], // กำหนดค่าให้เลือกได้ระหว่าง 'user' และ 'admin'
             default: 'admin', // กำหนดค่าเริ่มต้นเป็น 'user'
         },
         profile_img: {
