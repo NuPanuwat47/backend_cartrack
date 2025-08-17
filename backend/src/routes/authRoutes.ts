@@ -1,14 +1,15 @@
 import express from 'express';
-import { login,register,showAllUsers,renewToken,createUser,updateUser,deleteUser,
+import { login,register,showAllUsers,renewToken,forgotPassword,resetPassword
  } from '../controllers/authController';
 
 const router = express.Router();
 
 router.post('/login', login);
-router.post('/create', createUser);
-router.patch('/update', updateUser);
-router.delete('/delete', deleteUser);
+
 router.post('/renewToken', renewToken);
+router.post('/forgot-password', forgotPassword);
+router.post('/reset-password', resetPassword);
+
 router.post('/register', register);
 router.get('/users', showAllUsers);
 

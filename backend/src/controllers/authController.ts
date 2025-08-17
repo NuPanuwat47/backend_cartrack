@@ -2,6 +2,8 @@ import { Request, Response } from "express";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import User from "../models/User";
+import crypto from "crypto";
+import nodemailer from "nodemailer";
 
 // ฟังก์ชันสำหรับการดึงข้อมูลผู้ใช้ทั้งหมด
 export const showAllUsers = async (req: Request, res: Response): Promise<void> => {
@@ -134,171 +136,78 @@ export const renewToken = async (req: Request, res: Response): Promise<void> => 
     }
 };
 
-// ฟังก์ชันสำหรับการสร้างผู้ใช้ใหม่ (โดย admin หรือ manager)
-export const createUser = async (req: Request, res: Response): Promise<void> => {
-    const { email, password, firstName, lastName, role: newUserRole } = req.body;
-    const { role: currentUserRole } = req.body; // role ของผู้ใช้ที่เข้าสู่ระบบ
+
+export const forgotPassword = async (req: Request, res: Response): Promise<void> => {
+    const { email } = req.body;
 
     try {
-        // ตรวจสอบสิทธิ์การสร้างผู้ใช้
-        if (currentUserRole !== 'admin' && currentUserRole !== 'manager') {
-            res.status(403).json({ message: 'Permission denied. Only admin or manager can create users.' });
+        const user = await User.findOne({ email });
+        if (!user) {
+            res.status(400).json({ message: "User not found" });
             return;
         }
 
-        // manager สามารถสร้างผู้ใช้ได้เฉพาะ user และ viewer เท่านั้น
-        if (currentUserRole === 'manager' && (newUserRole === 'admin' || newUserRole === 'manager')) {
-            res.status(403).json({ message: 'Permission denied. Manager cannot create admin or manager accounts.' });
-            return;
-        }
+        // สร้าง token สำหรับ reset password
+        const resetToken = crypto.randomBytes(32).toString("hex");
+        const resetTokenExpire = Date.now() + 15 * 60 * 1000; // หมดอายุใน 15 นาที
 
-        // ตรวจสอบว่า role ใหม่เป็นค่าที่ถูกต้องหรือไม่
-        const validRoles = ['user', 'viewer', 'manager', 'admin'];
-        if (!validRoles.includes(newUserRole)) {
-            res.status(400).json({ message: 'Invalid role. Must be one of: user, viewer, manager, admin' });
-            return;
-        }
+        user.resetPasswordToken = resetToken;
+        user.resetPasswordExpires = resetTokenExpire;
+        await user.save();
 
-        const existingUser = await User.findOne({ email });
-        if (existingUser) {
-            res.status(400).json({ message: 'อีเมลนี้ มีผู้ใช้อยู่ในระบบแล้ว' });
-            return;
-        }
+        // ลิงก์สำหรับ reset
+        const resetLink = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`;
 
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(password, salt);
-
-        const newUser = new User({
-            email,
-            password: hashedPassword,
-            firstName,
-            lastName,
-            role: newUserRole,
-            profile_img: 'https://res.cloudinary.com/dboau6axv/image/upload/v1735641179/qa9dfyxn8spwm0nwtako.jpg',
+        // ส่งอีเมล (ใช้ nodemailer)
+        const transporter = nodemailer.createTransport({
+            service: "Gmail",
+            auth: {
+                user: process.env.EMAIL_USER,
+                pass: process.env.EMAIL_PASS,
+            },
         });
 
-        await newUser.save();
-
-        res.status(201).json({
-            message: 'User created successfully', user: {
-                id: newUser._id,
-                email: newUser.email,
-                firstName: newUser.firstName,
-                lastName: newUser.lastName,
-                role: newUser.role,
-                profile_img: newUser.profile_img
-            }
+        await transporter.sendMail({
+            from: `"Support" <${process.env.EMAIL_USER}>`,
+            to: user.email,
+            subject: "Password Reset",
+            html: `<p>Click <a href="${resetLink}">here</a> to reset your password.</p>`,
         });
+
+        res.status(200).json({ message: "Password reset link sent to email" });
     } catch (error) {
-        res.status(500).json({ message: 'Failed to create user', error });
+        console.error("Forgot password error:", error);
+        res.status(500).json({ message: "Error sending reset email", error });
     }
 };
 
-export const updateUser = async (req: Request, res: Response): Promise<void> => {
-    const { userId, firstName, lastName, email, newRole, role: currentUserRole } = req.body;
+export const resetPassword = async (req: Request, res: Response): Promise<void> => {
+    const { token, newPassword } = req.body;
 
     try {
-        // ตรวจสอบสิทธิ์การแก้ไขผู้ใช้
-        if (currentUserRole !== 'admin' && currentUserRole !== 'manager') {
-            res.status(403).json({ message: 'Permission denied. Only admin or manager can update users.' });
-            return;
-        }
+        const user = await User.findOne({
+            resetPasswordToken: token,
+            resetPasswordExpires: { $gt: Date.now() }, // ตรวจสอบว่ายังไม่หมดอายุ
+        });
 
-        // ค้นหาผู้ใช้ที่ต้องการแก้ไข
-        const user = await User.findById(userId);
         if (!user) {
-            res.status(404).json({ message: 'User not found' });
+            res.status(400).json({ message: "Invalid or expired token" });
             return;
         }
 
-        // manager ไม่สามารถแก้ไข admin หรือ manager ได้
-        if (currentUserRole === 'manager' && (user.role === 'admin' || user.role === 'manager')) {
-            res.status(403).json({ message: 'Permission denied. Manager cannot update admin or manager accounts.' });
-            return;
-        }
+        // hash รหัสผ่านใหม่
+        const salt = await bcrypt.genSalt(10);
+        user.password = await bcrypt.hash(newPassword, salt);
 
-        // ตรวจสอบอีเมลซ้ำ
-        if (email && email !== user.email) {
-            const existingUser = await User.findOne({ email });
-            if (existingUser) {
-                res.status(400).json({ message: 'อีเมลนี้ มีผู้ใช้อยู่ในระบบแล้ว' });
-                return;
-            }
-        }
-
-        // อัปเดต role ถ้ามี
-        if (newRole) {
-            const validRoles = ['user', 'viewer', 'manager', 'admin'];
-            if (!validRoles.includes(newRole)) {
-                res.status(400).json({ message: 'Invalid role. Must be one of: user, viewer, manager, admin' });
-                return;
-            }
-
-            // ตรวจสอบสิทธิ์ในการแก้ไข role
-            if (currentUserRole === 'manager' && (newRole === 'admin' || newRole === 'manager')) {
-                res.status(403).json({ message: 'Permission denied. Manager cannot assign admin or manager roles.' });
-                return;
-            }
-        }
-
-        // อัปเดตข้อมูลผู้ใช้
-        user.firstName = firstName || user.firstName;
-        user.lastName = lastName || user.lastName;
-        user.email = email || user.email;
-        if (newRole) user.role = newRole;
+        // ล้าง token
+        user.resetPasswordToken = undefined;
+        user.resetPasswordExpires = undefined;
 
         await user.save();
 
-        res.status(200).json({
-            message: 'User updated successfully',
-            user: {
-                id: user._id,
-                email: user.email,
-                firstName: user.firstName,
-                lastName: user.lastName,
-                role: user.role,
-                profile_img: user.profile_img
-            }
-        });
+        res.status(200).json({ message: "Password has been reset successfully" });
     } catch (error) {
-        res.status(500).json({ message: 'Failed to update user', error });
-    }
-};
-
-// ฟังก์ชันสำหรับการลบผู้ใช้
-export const deleteUser = async (req: Request, res: Response): Promise<void> => {
-    const { userId, role: currentUserRole, currentUserId } = req.body; // อ่านจาก body แทน params
-
-    try {
-        // ตรวจสอบสิทธิ์การลบผู้ใช้
-        if (currentUserRole !== 'admin' && currentUserRole !== 'manager') {
-            res.status(403).json({ message: 'Permission denied. Only admin or manager can delete users.' });
-            return;
-        }
-
-        // ค้นหาผู้ใช้ที่ต้องการลบ
-        const user = await User.findById(userId);
-        if (!user) {
-            res.status(404).json({ message: 'User not found' });
-            return;
-        }
-
-        // manager ไม่สามารถลบ admin หรือ manager ได้
-        if (currentUserRole === 'manager' && (user.role === 'admin' || user.role === 'manager')) {
-            res.status(403).json({ message: 'Permission denied. Manager cannot delete admin or manager accounts.' });
-            return;
-        }
-
-        // ป้องกันการลบตัวเอง
-        if (userId === currentUserId) {
-            res.status(400).json({ message: 'Cannot delete your own account' });
-            return;
-        }
-
-        await User.findByIdAndDelete(userId);
-
-        res.status(200).json({ message: 'User deleted successfully' });
-    } catch (error) {
-        res.status(500).json({ message: 'Failed to delete user', error });
+        console.error("Reset password error:", error);
+        res.status(500).json({ message: "Error resetting password", error });
     }
 };
